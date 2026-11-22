@@ -44,6 +44,8 @@ function safe(p: string): boolean {
 class Tree {
   private readonly orig = new Map<string, string | null>();
   readonly now = new Map<string, string | null>();
+  /** Moves that succeeded, in patch order: {old, new} (SPEC.md section 2, R lines). */
+  readonly moves: Array<{ old: string; new: string }> = [];
   original(p: string): string | null {
     if (!this.orig.has(p)) {
       let v: string | null = null;
@@ -62,6 +64,99 @@ class Tree {
 }
 
 type Edit = (tree: Tree) => void;
+
+/** Split a file's text into lines at its own line break (SPEC.md section 3). */
+function splitFile(text: string): { lines: string[]; br: '\r\n' | '\n'; final: boolean } {
+  if (text === '') return { lines: [], br: '\n', final: false };
+  const nl = text.indexOf('\n');
+  const br: '\r\n' | '\n' = nl > 0 && text[nl - 1] === '\r' ? '\r\n' : '\n';
+  const final = text.endsWith(br);
+  const lines = text.split(br);
+  if (final) lines.pop();
+  return { lines, br, final };
+}
+
+/** Join lines back with the file's own break; a file of no lines is written empty. */
+function joinFile(lines: string[], br: string, final: boolean): string {
+  if (lines.length === 0) return '';
+  return lines.join(br) + (final ? br : '');
+}
+
+const stripTrail = (s: string): string => s.replace(/[ \t]+$/, '');
+const stripBoth = (s: string): string => s.replace(/^[ \t]+/, '').replace(/[ \t]+$/, '');
+
+/** One line compared at one tier (SPEC.md section 5). */
+function lineEq(a: string, b: string, tier: 0 | 1 | 2): boolean {
+  if (tier === 0) return a === b;
+  if (tier === 1) return stripTrail(a) === stripTrail(b);
+  return stripBoth(a) === stripBoth(b);
+}
+
+/** Every 0-based start position where O matches the file's lines at the tier; overlapping allowed. */
+function findOccurrences(fileLines: string[], oldLines: string[], tier: 0 | 1 | 2): number[] {
+  const out: number[] = [];
+  const n = oldLines.length;
+  if (n === 0) return out;
+  for (let i = 0; i + n <= fileLines.length; i++) {
+    let ok = true;
+    for (let j = 0; j < n; j++) {
+      if (!lineEq(fileLines[i + j]!, oldLines[j]!, tier)) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) out.push(i);
+  }
+  return out;
+}
+
+/** The first tier (0, then 1, then 2; 0 only with --strict) at which O occurs at least once. */
+function matchTier(fileLines: string[], oldLines: string[], strict: boolean): { tier: 0 | 1 | 2; positions: number[] } | null {
+  const tiers: Array<0 | 1 | 2> = strict ? [0] : [0, 1, 2];
+  for (const t of tiers) {
+    const positions = findOccurrences(fileLines, oldLines, t);
+    if (positions.length > 0) return { tier: t, positions };
+  }
+  return null;
+}
+
+const leadWs = (s: string): string => {
+  const m = /^[ \t]*/.exec(s);
+  return m ? m[0] : '';
+};
+
+/** Tier-2 re-indentation (SPEC.md section 5): a non-blank line of N starting with P has P replaced by F. */
+function reindent(newLines: string[], oldFirst: string, fileFirst: string): string[] {
+  const f = leadWs(fileFirst);
+  const p = leadWs(oldFirst);
+  return newLines.map((l) => {
+    if (l === '' || l.trim() === '') return l;
+    if (!l.startsWith(p)) return l;
+    return f + l.slice(p.length);
+  });
+}
+
+/** One line of N: a context line is written as the file's own matched line (oIdx: its index in O). */
+interface NLine {
+  text: string;
+  ctx: boolean;
+  oIdx: number;
+}
+
+/** Replace the O lines at position `pos` with N, honouring context lines and tier-2 re-indentation. */
+function applyReplacement(fileLines: string[], pos: number, o: string[], n: NLine[], tier: 0 | 1 | 2): string[] {
+  const f = leadWs(fileLines[pos] ?? '');
+  const p = leadWs(o[0] ?? '');
+  const rep: string[] = [];
+  for (const e of n) {
+    if (e.ctx) rep.push(fileLines[pos + e.oIdx]!);
+    else if (tier === 2) {
+      const l = e.text;
+      rep.push(l === '' || l.trim() === '' || !l.startsWith(p) ? l : f + l.slice(p.length));
+    } else rep.push(e.text);
+  }
+  return [...fileLines.slice(0, pos), ...rep, ...fileLines.slice(pos + o.length)];
+}
 
 function detect(lines: string[]): string | null {
   const first = lines.findIndex((l) => !blank(l));
