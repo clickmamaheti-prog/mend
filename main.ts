@@ -835,20 +835,42 @@ function run(args: string[]): { code: number; out: string[] } {
     }
   }
   if (fails.length > 0) return { code: 1, out: [...fails.map((f) => `error: ${f.code} ${f.path}`), `failed: ${fails.length} of ${edits.length} edits`] };
-  const rows: string[] = [];
-  for (const p of [...tree.now.keys()].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
+  const rows: Array<{ key: string; line: string }> = [];
+  for (const p of [...tree.now.keys()]) {
     const was = tree.original(p);
     const now = tree.now.get(p)!;
     if (was === now) continue;
-    rows.push(`${was === null ? 'A' : now === null ? 'D' : 'M'} ${p}`);
-    if (check) continue;
-    if (now === null) rmSync(p, { force: true });
-    else {
-      mkdirSync(dirname(p), { recursive: true });
-      writeFileSync(p, now);
+    rows.push({ key: p, line: `${was === null ? 'A' : now === null ? 'D' : 'M'} ${p}` });
+  }
+  // A move that succeeded replaces its D and A lines with one R line, sorted by <new> (SPEC.md section 2).
+  for (const mv of tree.moves) {
+    if (tree.original(mv.old) === null) continue;
+    if (tree.now.get(mv.old) !== null) continue;
+    if (tree.original(mv.new) !== null) continue;
+    const nowNew = tree.now.get(mv.new);
+    if (nowNew === null || nowNew === undefined) continue;
+    const dIdx = rows.findIndex((r) => r.line === `D ${mv.old}`);
+    const aIdx = rows.findIndex((r) => r.line === `A ${mv.new}`);
+    if (dIdx < 0 || aIdx < 0) continue;
+    rows.splice(Math.max(dIdx, aIdx), 1);
+    rows.splice(Math.min(dIdx, aIdx), 1);
+    rows.push({ key: mv.new, line: `R ${mv.old} -> ${mv.new}` });
+  }
+  rows.sort((a, b) => Buffer.compare(Buffer.from(a.key), Buffer.from(b.key)));
+  if (!check) {
+    for (const p of [...tree.now.keys()]) {
+      const was = tree.original(p);
+      const now = tree.now.get(p)!;
+      if (was === now) continue;
+      if (now === null) rmSync(p, { force: true });
+      else {
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, now);
+      }
     }
   }
-  return { code: 0, out: [...rows, `ok: ${rows.length} ${rows.length === 1 ? 'file' : 'files'}`] };
+  const outLines = rows.map((r) => r.line);
+  return { code: 0, out: [...outLines, `ok: ${outLines.length} ${outLines.length === 1 ? 'file' : 'files'}`] };
 }
 
 
