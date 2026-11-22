@@ -300,11 +300,11 @@ function parseDiffGit(line: string): { old: string; new: string } | null {
   if (sep < 0) return null;
   const old = rest.slice(2, sep);
   const nw = rest.slice(sep + 3).trimEnd();
-  if (old === '' || nw === '') return null;
+  if (old === '' || nw === '' || old.includes(' ') || old.includes('\t')) return null;
   return { old, new: nw };
 }
 
-const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: |$)/;
+const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
 /** Read a unified patch (SPEC.md section 6) into one edit per section. */
 function unifiedEdits(lines: string[], strict: boolean): Edit[] {
