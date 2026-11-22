@@ -512,6 +512,79 @@ function unifiedSectionEdit(s: UnifiedSection, strict: boolean): Edit {
   };
 }
 
+/** One SEARCH/REPLACE block (SPEC.md section 7). */
+function searchReplaceBlockEdit(path: string, oldLines: string[], newLines: string[], strict: boolean): Edit {
+  return (tree) => {
+    if (!safe(path)) throw new Fail('unsafe', path);
+    if (oldLines.length === 0) {
+      if (tree.get(path) !== null) throw new Fail('exists', path);
+      tree.now.set(path, joinFile(newLines, '\n', true));
+      return;
+    }
+    const cur = tree.get(path);
+    if (cur === null) throw new Fail('missing', path);
+    const { lines, br, final } = splitFile(cur);
+    const m = matchTier(lines, oldLines, strict);
+    if (m === null) throw new Fail('no-match', path);
+    if (m.positions.length > 1) throw new Fail('ambiguous', path);
+    const pos = m.positions[0]!;
+    const rep = m.tier === 2 ? reindent(newLines, oldLines[0]!, lines[pos]!) : [...newLines];
+    const out = [...lines.slice(0, pos), ...rep, ...lines.slice(pos + oldLines.length)];
+    tree.now.set(path, joinFile(out, br, final));
+  };
+}
+
+/** Read SEARCH/REPLACE blocks (SPEC.md section 7) into one edit per block. */
+function searchReplaceEdits(lines: string[], strict: boolean): Edit[] {
+  const edits: Edit[] = [];
+  let prevPath: string | null = null;
+  let searchFrom = 0;
+  let i = 0;
+  const n = lines.length;
+  while (i < n) {
+    if (lines[i]!.trimEnd() !== '<<<<<<< SEARCH') {
+      i++;
+      continue;
+    }
+    const searchIdx = i;
+    // The path is the nearest line before SEARCH, after the previous block's REPLACE,
+    // that is not blank and does not start with three backticks (trimmed).
+    let path: string | null = null;
+    for (let j = searchIdx - 1; j >= searchFrom; j--) {
+      const t = lines[j]!.trim();
+      if (t === '' || t.startsWith('```')) continue;
+      path = t;
+      break;
+    }
+    if (path === null) {
+      if (prevPath === null) throw new Exit2(`error: parse ${searchIdx + 1}`);
+      path = prevPath;
+    }
+    let eqIdx = -1;
+    for (let j = searchIdx + 1; j < n; j++) {
+      if (lines[j]!.trimEnd() === '=======') {
+        eqIdx = j;
+        break;
+      }
+    }
+    let repIdx = -1;
+    if (eqIdx >= 0) {
+      for (let j = eqIdx + 1; j < n; j++) {
+        if (lines[j]!.trimEnd() === '>>>>>>> REPLACE') {
+          repIdx = j;
+          break;
+        }
+      }
+    }
+    if (eqIdx < 0 || repIdx < 0) throw new Exit2(`error: parse ${searchIdx + 1}`);
+    edits.push(searchReplaceBlockEdit(path, lines.slice(searchIdx + 1, eqIdx), lines.slice(eqIdx + 1, repIdx), strict));
+    prevPath = path;
+    searchFrom = repIdx + 1;
+    i = repIdx + 1;
+  }
+  return edits;
+}
+
 function run(args: string[]): { code: number; out: string[] } {
   let format: string | null = null;
   let check = false;
@@ -540,7 +613,7 @@ function run(args: string[]): { code: number; out: string[] } {
   if (kind === null) return { code: 2, out: ['error: format'] };
   let edits: Edit[];
   try {
-    edits = kind === 'json' ? jsonEdits(text, lines) : kind === 'unified' ? unifiedEdits(lines, strict) : [];
+    edits = kind === 'json' ? jsonEdits(text, lines) : kind === 'unified' ? unifiedEdits(lines, strict) : kind === 'search-replace' ? searchReplaceEdits(lines, strict) : [];
     if (edits.length === 0) throw new Exit2('error: parse 1');
   } catch (e) {
     if (e instanceof Exit2) return { code: 2, out: [e.line] };
