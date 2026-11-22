@@ -439,8 +439,9 @@ function applyHunks(text: string, hunks: Hunk[], strict: boolean, path: string):
     }
     if (o.length === 0) {
       const insertPos = Math.min(Math.max(h.a + d, 0), lines.length);
+      const atEnd = insertPos === lines.length;
       lines = [...lines.slice(0, insertPos), ...n.map((e) => e.text), ...lines.slice(insertPos)];
-      if (insertPos === lines.length) final = !lastNoEol;
+      if (atEnd) final = !lastNoEol;
       d += n.length;
     } else {
       const m = matchTier(lines, o, strict);
